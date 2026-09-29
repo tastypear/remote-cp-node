@@ -2,7 +2,7 @@
 
 Node.js `child_process`-compatible module backed by HTTP. A drop-in replacement for `require("child_process")` that routes `exec`/`spawn`/`fork` to a remote server — a non-interactive SSH exec replacement.
 
-Companion to [remote-fs-node](https://github.com/tastypear/remote-fs-node) (SFTP replacement). Both share the same HTTP server, `configure()` shape, and monkey-patch strategy.
+Companion to [remote-fs-node](https://github.com/tastypear/remote-fs-node) (SFTP replacement). Both share the same HTTP server ([remote-ops-server](https://github.com/tastypear/remote-ops-server)), `configure()` shape, and monkey-patch strategy.
 
 ## What makes this different
 
@@ -108,7 +108,7 @@ SSH exec channel supports one-shot stdin (`echo x | ssh host cmd`) and that's th
 
 ## Server backend
 
-remote-cp-node requires an HTTP server implementing these exec endpoints (shared with remote-fs-node's server):
+remote-cp-node requires an HTTP server implementing these exec endpoints (shared with remote-fs-node; see [remote-ops-server](https://github.com/tastypear/remote-ops-server) for the reference implementation):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
