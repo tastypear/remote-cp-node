@@ -1,0 +1,151 @@
+# remote-cp-node
+
+Node.js `child_process`-compatible module backed by HTTP. A drop-in replacement for `require("child_process")` that routes `exec`/`spawn`/`fork` to a remote server — a non-interactive SSH exec replacement.
+
+Companion to [remote-fs-node](https://github.com/tastypear/remote-fs-node) (SFTP replacement). Both share the same HTTP server, `configure()` shape, and monkey-patch strategy.
+
+## What makes this different
+
+Like remote-fs-node, this patches Node at **three levels**:
+
+1. **JS export layer** — replaces all methods on `require("child_process")`
+2. **`process.binding` layer** — not applicable (child_process has no fs-style binding)
+3. **`node:child_process` protocol** — patches `Module._resolveFilename` so `require("node:child_process")` is also intercepted
+
+This means any code using `exec`/`spawn`/`execFile`/`fork` — including third-party libraries — works remotely without code changes.
+
+## Quick start
+
+```bash
+npm install remote-cp-node
+```
+
+### As drop-in replacement
+
+```js
+const remoteCp = require("remote-cp-node");
+remoteCp.configure({
+  baseURL: "http://your-server:8765",
+  token: "your-token",
+});
+
+const cp = remoteCp;
+const { stdout, stderr } = await cp.promises.exec("uname -a");
+const r = cp.spawn("ls", ["-la", "/tmp"]);  // streaming stdout
+r.stdout.on("data", (d) => console.log(d.toString()));
+```
+
+### As monkey-patch
+
+```js
+const remoteCp = require("remote-cp-node");
+remoteCp.configure({ baseURL: "http://your-server:8765", token: "xxx" });
+remoteCp.patch();
+
+// Now ALL code that uses child_process works remotely
+const cp = require("child_process");
+const { stdout } = cp.execSync("whoami");
+
+// Restore
+remoteCp.restore();
+```
+
+### Co-existence with remote-fs-node
+
+Both libraries wrap `Module._resolveFilename` to intercept the `node:` protocol. When patching both in the same process, **restore in reverse order** (LIFO) — the last-patched library must restore first, because each saved `_resolveFilename` references the previous wrapper:
+
+```js
+remoteFs.patch();   // patches node:fs
+remoteCp.patch();   // patches node:child_process (wraps fs's resolver)
+// ... use both ...
+remoteCp.restore(); // MUST restore cp before fs
+remoteFs.restore();
+```
+
+Out-of-order restore leaves a dangling wrapper reference (`Cannot read properties of null`). This mirrors how Node's own `Module` hook chains (e.g. ts-node + esbuild) require LIFO teardown.
+
+## API
+
+Mirrors Node's `child_process`:
+
+| Function | Transport | Shell | Notes |
+|----------|-----------|-------|-------|
+| `exec(cmd, opts, cb)` | SSE (`/api/exec/stream`) | yes (`sh -c`) | Returns `ChildProcess` with **live PID** (killable mid-run); stdout/stderr buffer-collected, callback gets `(err, stdout, stderr)` on exit |
+| `execFile(file, args, opts, cb)` | SSE | **no** | args as argv array (no injection); live PID, killable mid-run |
+| `execSync(cmd, opts)` | sync curl (`/api/exec`) | yes | Throws on non-zero exit |
+| `execFileSync(file, args, opts)` | sync curl | **no** | args as argv |
+| `spawn(cmd, args, opts)` | SSE | no (unless `opts.shell`) | Returns `ChildProcess` with real PID; live stdout/stderr streams |
+| `spawnSync(cmd, args, opts)` | sync curl | no (unless `opts.shell`) | Returns `{pid, stdout, stderr, status, signal}` |
+| `fork(modulePath, args, opts)` | SSE | **no** | Uses `"node"` (remote `$PATH`) + modulePath as arg (no shell, no injection) |
+| `promises.exec` / `promises.execFile` / `promises.fork` | — | — | Promise wrappers |
+
+`exec`/`execFile` run over the streaming endpoint (like Node's native `exec` = spawn + buffer), so they return a `ChildProcess` with a live PID that supports `kill()` mid-run. Output is buffer-collected up to `maxBuffer` and delivered to the callback on exit — no server-side full-buffer OOM.
+
+### Options
+
+- `cwd` — working directory (defaults to `configure({ defaultCwd })` or `$HOME`, mirroring SSH exec's home default)
+- `env` — environment variables (merged over a sanitized server env; secrets like the auth token are never inherited)
+- `timeout` — milliseconds (converted to seconds server-side); enforced on **both** sync and stream endpoints
+- `maxBuffer` — bytes; exceeded → kill + `error`/`signal` (Node semantics, not silent truncation)
+- `encoding` — `"buffer"` returns Buffer, else string (default `utf8`)
+- `killSignal` — default `"SIGTERM"`
+- `input` — one-shot stdin (string/Buffer), sent with the request and EOF'd before the process runs
+- `stdio` — `"pipe"` (default) or `"ignore"`; array form supported for indices 1/2
+
+### ChildProcess
+
+`EventEmitter` with `pid`, `exitCode`, `signalCode`, `killed`, `stdin`, `stdout`, `stderr`, `stdio`. Methods: `kill(signal)`, `send()`, `disconnect()`, `ref()`/`unref()`.
+
+`kill(signal)` contacts `/api/exec/kill` with **ownership verification** — the server only kills PIDs it spawned (whole process group via `os.killpg`). If the kill can't be confirmed (process already exited, network error), an `exit`/`close` is synthesized so callers never hang. Works on `exec`/`execFile`/`spawn`/`fork` (all stream-backed with live PIDs).
+
+## stdin semantics
+
+SSH exec channel supports one-shot stdin (`echo x | ssh host cmd`) and that's the dominant real-world pattern. remote-cp-node supports:
+
+- **One-shot via `opts.input`** — sent in the request body, written before the process runs. Covers ~85% of use cases.
+- **Buffered via `child.stdin.write()` + `end()`** — chunks are buffered and flushed as a single POST to `/api/exec/stdin` on `end()`. Covers pipe-style usage (`write(data); end()`). The flush waits for the `pid` SSE event before sending.
+- **True streaming stdin** (write → await output → write) — **not supported**. This is HTTP/SSE's natural limitation (one-directional). `write()` after the flush throws `ERR_STREAM_WRITE_AFTER_END`. For interactive processes, use a PTY-capable transport (future work).
+
+## Server backend
+
+remote-cp-node requires an HTTP server implementing these exec endpoints (shared with remote-fs-node's server):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/exec` | POST | Sync exec — returns `{stdout, stderr, exit_code, pid, duration_ms}` |
+| `/api/exec/stream` | POST | SSE streaming — emits `pid` → `stdout`/`stderr` → `exit` frames; keepalive comments on idle |
+| `/api/exec/kill` | POST | Kill by PID (ownership-checked against server process table) |
+| `/api/exec/stdin` | POST | Write to a spawned process's stdin (`{pid, data, close}`) |
+
+Request body (`shell=true` for `exec`/`execSync`, `shell=false` otherwise):
+```json
+{ "cmd": "echo", "args": ["hello"], "shell": false, "cwd": "/", "env": {}, "timeout": 30, "stdin": null }
+```
+
+Server guarantees:
+- **Process registry** — every spawned PID is tracked; kill/stdin verify ownership (no raw `os.kill` on arbitrary PIDs)
+- **Env sanitization** — secrets (`*TOKEN*`, `*SECRET*`, `*KEY*`, etc.) stripped from the inherited environment
+- **Timeout enforcement** — on both sync and stream endpoints; kills the whole process group (`os.killpg`)
+- **SSE keepalive** — idle periods emit `: keepalive` comments to defeat proxy idle timeouts
+- **Orphan cleanup** — client disconnect → best-effort process-group kill; background sweeper reaps idle entries
+
+## Test
+
+```bash
+# Start a remote-fs server (shared), then:
+node test/test.js
+```
+
+## Limitations
+
+- True streaming stdin unsupported (see above) — one-shot `input` and buffered `write()+end()` cover the non-interactive exec use cases
+- Binary output: stdout/stderr are decoded UTF-8 with `errors="replace"` on the server; non-UTF-8 bytes may be corrupted. Use for text commands, not binary transfer (use remote-fs-node for binary file I/O)
+- Sync methods use `curl` subprocess (~50-100ms overhead per call)
+- `stdio: "inherit"` not implemented; `detached`/`uid`/`gid` not supported
+- IPC channel (`fork`'s `send`/`message` events) writes to stdin, not a real IPC channel
+- PTY/interactive terminal not supported (use `spawn` + SSE for live output)
+- This mirrors Node's `child_process` API, **not** the `ssh2` library's channel/stream API — downstream code using `ssh2` directly needs adapter work, but code using `child_process` to shell out to `ssh` works transparently after `patch()`
+
+## License
+
+MIT

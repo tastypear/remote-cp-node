@@ -1,0 +1,16 @@
+{
+  "name": "remote-cp-node",
+  "version": "1.0.0",
+  "description": "Node.js child_process-compatible module backed by HTTP. Drop-in replacement for require('child_process') that routes exec/spawn to a remote server — non-interactive SSH exec replacement.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": ["child_process", "exec", "spawn", "remote", "http", "ssh", "agent", "drop-in", "binding"],
+  "author": "tastypear",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tastypear/remote-cp-node"
+  }
+}
