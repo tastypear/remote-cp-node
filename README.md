@@ -115,6 +115,10 @@ Enable with `configure({ wsTransport: true })`. `spawn()` then uses a bidirectio
 
 Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). The session is registered in the server's process table, so HTTP `/api/exec/kill` and `/api/exec/stdin` also work on WS-spawned PIDs. `exec`/`execFile` use WS with buffer-collect (same callback semantics, but binary-safe); `spawnSync`/`execSync`/`execFileSync` still use the sync HTTP path.
 
+### PTY mode
+
+`spawn(cmd, args, { pty: true, cols: 80, rows: 24 })` runs the child with a pseudo-terminal — the child sees a real TTY (`isatty()` true), gets echo and line editing, and `TERM=xterm-256color`. Output is merged (stdout+stderr on one stream, as with any PTY). Send `child.resize(cols, rows)` to update the window size. To signal EOF to an interactive process, write `\x04` (Ctrl-D) — `stdin.end()` is a no-op in PTY mode (closing the master kills the session).
+
 ## Server backend
 
 remote-cp-node requires an HTTP server implementing these exec endpoints (shared with remote-fs-node; see [remote-ops-server](https://github.com/tastypear/remote-ops-server) for the reference implementation):
@@ -145,6 +149,7 @@ Server guarantees:
 # Start a remote-ops server (shared), then:
 node test/test.js              # HTTP/SSE transport
 node test/test_ws.js           # WebSocket transport
+node test/test_pty.js          # PTY mode (interactive processes)
 node test/test_integration.js  # remote-fs + remote-cp (HTTP)
 node test/test_ws_integration.js  # remote-fs + remote-cp (WS)
 ```
