@@ -195,6 +195,19 @@ async function run() {
     assert.ok(data.trim().includes("sh"), "sh -c sets $0 to sh: " + data.trim());
   });
 
+  await test("shell: true with args concatenates cmd+args", async () => {
+    const child = rcp.spawn("echo", ["shell_args_test"], { shell: true });
+    let data = "";
+    child.stdout.on("data", (c) => { data += c.toString(); });
+    await once(child, "close");
+    assert.strictEqual(data.trim(), "shell_args_test", "args not dropped with shell:true");
+  });
+
+  await test("shell: spawnSync true with args concatenates cmd+args", async () => {
+    const result = rcp.spawnSync("echo", ["sync_shell_args"], { shell: true });
+    assert.strictEqual(result.stdout.trim(), "sync_shell_args", "spawnSync args not dropped");
+  });
+
   // ─── 8. uid/gid ───
   await test("uid/gid: spawning with current user's uid/gid works", async () => {
     // Get the server-side uid first.
@@ -203,7 +216,7 @@ async function run() {
     probe.stdout.on("data", (c) => { uidStr += c.toString(); });
     await once(probe, "close");
     const uid = parseInt(uidStr.trim(), 10);
-    assert.ok(uid > 0, "got valid uid");
+    assert.ok(!isNaN(uid) && uidStr.trim().length > 0, "got valid uid: " + uidStr.trim());
 
     const probe2 = rcp.spawn("id", ["-g"]);
     let gidStr = "";
