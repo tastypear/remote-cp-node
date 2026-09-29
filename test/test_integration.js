@@ -2,12 +2,21 @@
 process.on("uncaughtException", (e) => { console.error("UNCAUGHT:", e); process.exit(1); });
 process.on("unhandledRejection", (e) => { console.error("UNHANDLED:", e); process.exit(1); });
 
-// Integration test: remote-fs + remote-child_process working together
+// Resolve remote-fs-node from sibling directory. Tries the published package
+// name (remote-fs-node) first, falls back to the dev working tree (remote-fs-dev).
 const path = require("path");
 const assert = require("assert");
 
-// Resolve remote-fs from sibling directory
-const remoteFsPath = path.resolve(__dirname, "../../remote-fs-dev");
+let remoteFsPath;
+for (const candidate of ["../../remote-fs-node", "../../remote-fs-dev"]) {
+  const p = path.resolve(__dirname, candidate);
+  try { require.resolve(p); remoteFsPath = p; break; } catch {}
+}
+if (!remoteFsPath) {
+  console.error("FATAL: remote-fs-node not found in sibling directory");
+  console.error("       clone https://github.com/tastypear/remote-fs-node next to remote-cp-node");
+  process.exit(1);
+}
 const rfs = require(remoteFsPath);
 const rcp = require("../index.js");
 

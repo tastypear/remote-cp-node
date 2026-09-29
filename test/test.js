@@ -447,7 +447,7 @@ async function run() {
 
   // ─── server hardening: env sanitization (no token leak) ───
   await test("hardening: auth token not leaked to child env", async () => {
-    const out = rcp.execSync("printenv AGENT_SHIM_TOKEN || echo NO_LEAK");
+    const out = rcp.execSync("printenv REMOTE_OPS_TOKEN || echo NO_LEAK");
     assert.strictEqual(out.toString().trim(), "NO_LEAK");
   });
 
