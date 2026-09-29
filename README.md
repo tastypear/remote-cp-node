@@ -119,6 +119,10 @@ Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). 
 
 `spawn(cmd, args, { pty: true, cols: 80, rows: 24 })` runs the child with a pseudo-terminal — the child sees a real TTY (`isatty()` true), gets echo and line editing, and `TERM=xterm-256color`. Output is merged (stdout+stderr on one stream, as with any PTY). Send `child.resize(cols, rows)` to update the window size. To signal EOF to an interactive process, write `\x04` (Ctrl-D) — `stdin.end()` is a no-op in PTY mode (closing the master kills the session).
 
+### Detach mode
+
+`spawn(cmd, args, { detach: true })` keeps the process alive after the WebSocket disconnects. On disconnect the child emits `'detach'` (with the pid) instead of `'close'` — the process continues running on the server with its output drained. Check status with `await client.status(pid)` (returns `{running, exit_code, ...}`) or kill with `await client.kill(pid)`. Useful for long-running processes that must survive network blips.
+
 ## Server backend
 
 remote-cp-node requires an HTTP server implementing these exec endpoints (shared with remote-fs-node; see [remote-ops-server](https://github.com/tastypear/remote-ops-server) for the reference implementation):
