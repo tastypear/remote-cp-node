@@ -74,7 +74,7 @@ Mirrors Node's `child_process`:
 | `execFile(file, args, opts, cb)` | SSE | **no** | args as argv array (no injection); live PID, killable mid-run |
 | `execSync(cmd, opts)` | sync curl (`/api/exec`) | yes | Throws on non-zero exit |
 | `execFileSync(file, args, opts)` | sync curl | **no** | args as argv |
-| `spawn(cmd, args, opts)` | SSE | no (unless `opts.shell`) | Returns `ChildProcess` with real PID; live stdout/stderr streams |
+| `spawn(cmd, args, opts)` | SSE or WS (`/ws/exec`) | no (unless `opts.shell`) | Returns `ChildProcess` with real PID; live stdout/stderr streams. WS transport (`wsTransport:true`) adds streaming stdin + binary-safe output |
 | `spawnSync(cmd, args, opts)` | sync curl | no (unless `opts.shell`) | Returns `{pid, stdout, stderr, status, signal}` |
 | `fork(modulePath, args, opts)` | SSE | **no** | Uses `"node"` (remote `$PATH`) + modulePath as arg (no shell, no injection) |
 | `promises.exec` / `promises.execFile` / `promises.fork` | — | — | Promise wrappers |
@@ -104,7 +104,16 @@ SSH exec channel supports one-shot stdin (`echo x | ssh host cmd`) and that's th
 
 - **One-shot via `opts.input`** — sent in the request body, written before the process runs. Covers ~85% of use cases.
 - **Buffered via `child.stdin.write()` + `end()`** — chunks are buffered and flushed as a single POST to `/api/exec/stdin` on `end()`. Covers pipe-style usage (`write(data); end()`). The flush waits for the `pid` SSE event before sending.
-- **True streaming stdin** (write → await output → write) — **not supported**. This is HTTP/SSE's natural limitation (one-directional). `write()` after the flush throws `ERR_STREAM_WRITE_AFTER_END`. For interactive processes, use a PTY-capable transport (future work).
+- **True streaming stdin** (write → await output → write) — supported via **WebSocket transport** (`configure({ wsTransport: true })`). `spawn()` upgrades to a bidirectional `/ws/exec` session: `child.stdin.write()` streams each chunk as a WS frame, `end()` sends EOF, and stdout/stderr are binary-safe (base64 fallback). `exec`/`execFile`/`spawnSync` still use SSE (buffered semantics). For PTY/resize, see future work.
+
+## WebSocket transport
+
+Enable with `configure({ wsTransport: true })`. `spawn()` then uses a bidirectional WebSocket (`/ws/exec`) instead of SSE, solving two SSE limitations:
+
+- **Streaming stdin** — `child.stdin.write(chunk)` sends immediately; `child.stdin.end()` sends EOF. Interactive write→read→write works.
+- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy).
+
+Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). The session is registered in the server's process table, so HTTP `/api/exec/kill` and `/api/exec/stdin` also work on WS-spawned PIDs. `exec`/`execFile`/`spawnSync`/`fork` are unaffected — only `spawn()` changes transport.
 
 ## Server backend
 
@@ -116,6 +125,7 @@ remote-cp-node requires an HTTP server implementing these exec endpoints (shared
 | `/api/exec/stream` | POST | SSE streaming — emits `pid` → `stdout`/`stderr` → `exit` frames; keepalive comments on idle |
 | `/api/exec/kill` | POST | Kill by PID (ownership-checked against server process table) |
 | `/api/exec/stdin` | POST | Write to a spawned process's stdin (`{pid, data, close}`) |
+| `/ws/exec` | WS | Bidirectional — streaming stdin, binary-safe stdout/stderr (base64), kill, keepalive |
 
 Request body (`shell=true` for `exec`/`execSync`, `shell=false` otherwise):
 ```json
@@ -132,8 +142,11 @@ Server guarantees:
 ## Test
 
 ```bash
-# Start a remote-fs server (shared), then:
-node test/test.js
+# Start a remote-ops server (shared), then:
+node test/test.js              # HTTP/SSE transport
+node test/test_ws.js           # WebSocket transport
+node test/test_integration.js  # remote-fs + remote-cp (HTTP)
+node test/test_ws_integration.js  # remote-fs + remote-cp (WS)
 ```
 
 ## Limitations
