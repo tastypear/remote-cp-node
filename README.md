@@ -111,7 +111,7 @@ SSH exec channel supports one-shot stdin (`echo x | ssh host cmd`) and that's th
 Enable with `configure({ wsTransport: true })`. `spawn()` then uses a bidirectional WebSocket (`/ws/exec`) instead of SSE, solving two SSE limitations:
 
 - **Streaming stdin** — `child.stdin.write(chunk)` sends immediately; `child.stdin.end()` sends EOF. Interactive write→read→write works.
-- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy). Applies to `spawn`, `exec`, and `execFile`.
+- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy). Applies to `spawn`, `exec`, and `execFile`. The WS transport also uses binary frames (1-byte prefix + raw bytes) by default, eliminating the 33% base64 overhead for binary-heavy output.
 
 Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). The session is registered in the server's process table, so HTTP `/api/exec/kill` and `/api/exec/stdin` also work on WS-spawned PIDs. `exec`/`execFile` use WS with buffer-collect (same callback semantics, but binary-safe); `spawnSync`/`execSync`/`execFileSync` still use the sync HTTP path.
 
