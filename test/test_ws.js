@@ -282,6 +282,26 @@ async function run() {
     assert.strictEqual(stdout.length, 64, "promises.exec should preserve binary");
   });
 
+  // ─── execSync binary-safe (sync /api/exec with base64) ───
+  await test("ws: execSync binary-safe (encoding buffer)", async () => {
+    const out = rcp.execSync("head -c 100 /dev/urandom", { encoding: "buffer", timeout: 10 });
+    assert.ok(Buffer.isBuffer(out), "execSync should return Buffer");
+    assert.strictEqual(out.length, 100, "execSync should preserve 100 binary bytes");
+  });
+
+  // ─── execFileSync binary-safe ───
+  await test("ws: execFileSync binary-safe", async () => {
+    const out = rcp.execFileSync("head", ["-c", "80", "/dev/urandom"], { encoding: "buffer", timeout: 10 });
+    assert.strictEqual(out.length, 80, "execFileSync should preserve 80 binary bytes");
+  });
+
+  // ─── spawnSync binary-safe ───
+  await test("ws: spawnSync binary-safe output", async () => {
+    const r = rcp.spawnSync("head", ["-c", "48", "/dev/urandom"], { encoding: "buffer", timeout: 10 });
+    assert.ok(Buffer.isBuffer(r.stdout), "spawnSync stdout should be Buffer");
+    assert.strictEqual(r.stdout.length, 48, "spawnSync should preserve 48 binary bytes");
+  });
+
   console.log("\n=== " + passed + " passed, " + failed + " failed ===");
   process.exit(failed > 0 ? 1 : 0);
 }
