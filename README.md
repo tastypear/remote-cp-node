@@ -70,8 +70,8 @@ Mirrors Node's `child_process`:
 
 | Function | Transport | Shell | Notes |
 |----------|-----------|-------|-------|
-| `exec(cmd, opts, cb)` | SSE (`/api/exec/stream`) | yes (`sh -c`) | Returns `ChildProcess` with **live PID** (killable mid-run); stdout/stderr buffer-collected, callback gets `(err, stdout, stderr)` on exit |
-| `execFile(file, args, opts, cb)` | SSE | **no** | args as argv array (no injection); live PID, killable mid-run |
+| `exec(cmd, opts, cb)` | SSE or WS (`/ws/exec`) | yes (`sh -c`) | Returns `ChildProcess` with **live PID** (killable mid-run); stdout/stderr buffer-collected, callback gets `(err, stdout, stderr)` on exit. WS transport adds binary-safe output |
+| `execFile(file, args, opts, cb)` | SSE or WS | **no** | args as argv array (no injection); live PID, killable mid-run. WS transport adds binary-safe output |
 | `execSync(cmd, opts)` | sync curl (`/api/exec`) | yes | Throws on non-zero exit |
 | `execFileSync(file, args, opts)` | sync curl | **no** | args as argv |
 | `spawn(cmd, args, opts)` | SSE or WS (`/ws/exec`) | no (unless `opts.shell`) | Returns `ChildProcess` with real PID; live stdout/stderr streams. WS transport (`wsTransport:true`) adds streaming stdin + binary-safe output |
@@ -111,9 +111,9 @@ SSH exec channel supports one-shot stdin (`echo x | ssh host cmd`) and that's th
 Enable with `configure({ wsTransport: true })`. `spawn()` then uses a bidirectional WebSocket (`/ws/exec`) instead of SSE, solving two SSE limitations:
 
 - **Streaming stdin** — `child.stdin.write(chunk)` sends immediately; `child.stdin.end()` sends EOF. Interactive write→read→write works.
-- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy).
+- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy). Applies to `spawn`, `exec`, and `execFile`.
 
-Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). The session is registered in the server's process table, so HTTP `/api/exec/kill` and `/api/exec/stdin` also work on WS-spawned PIDs. `exec`/`execFile`/`spawnSync`/`fork` are unaffected — only `spawn()` changes transport.
+Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). The session is registered in the server's process table, so HTTP `/api/exec/kill` and `/api/exec/stdin` also work on WS-spawned PIDs. `exec`/`execFile` use WS with buffer-collect (same callback semantics, but binary-safe); `spawnSync`/`execSync`/`execFileSync` still use the sync HTTP path.
 
 ## Server backend
 

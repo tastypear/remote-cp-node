@@ -224,6 +224,64 @@ async function run() {
     assert.ok(hadError, "should emit error for bad command");
   });
 
+  // ─── exec over WS: text output ───
+  await test("ws: exec text output + callback", async () => {
+    const { stdout } = await new Promise((res) =>
+      rcp.exec("echo exec_ws_text", (err, stdout, stderr) => res({ err, stdout, stderr }))
+    );
+    assert.strictEqual(stdout.toString().trim(), "exec_ws_text");
+  });
+
+  // ─── exec over WS: binary-safe stdout (the key gap #1 fix) ───
+  await test("ws: exec binary-safe stdout (no errors=replace corruption)", async () => {
+    const { stdout } = await new Promise((res) =>
+      rcp.exec("head -c 256 /dev/urandom", { maxBuffer: 4096, encoding: "buffer" }, (err, stdout) => res({ err, stdout }))
+    );
+    assert.ok(Buffer.isBuffer(stdout), "exec stdout should be a Buffer");
+    assert.strictEqual(stdout.length, 256, "should receive exactly 256 bytes uncorrupted");
+  });
+
+  // ─── execFile over WS: binary-safe stdout ───
+  await test("ws: execFile binary-safe stdout", async () => {
+    const { stdout } = await new Promise((res) =>
+      rcp.execFile("head", ["-c", "128", "/dev/urandom"], { maxBuffer: 4096, encoding: "buffer" }, (err, stdout) => res({ err, stdout }))
+    );
+    assert.strictEqual(stdout.length, 128, "execFile should preserve 128 binary bytes");
+  });
+
+  // ─── exec over WS: stdin via opts.input ───
+  await test("ws: exec stdin via opts.input", async () => {
+    const { stdout } = await new Promise((res) =>
+      rcp.exec("cat", { input: "piped via ws exec\n" }, (err, stdout) => res({ err, stdout }))
+    );
+    assert.strictEqual(stdout.toString(), "piped via ws exec\n");
+  });
+
+  // ─── exec over WS: exit code ───
+  await test("ws: exec exit code in error", async () => {
+    const { err } = await new Promise((res) =>
+      rcp.exec("exit 9", (err, stdout, stderr) => res({ err }))
+    );
+    assert.ok(err, "non-zero exit should produce error");
+    assert.strictEqual(err.code, 9);
+  });
+
+  // ─── exec over WS: kill mid-run ───
+  await test("ws: exec kill mid-run", async () => {
+    const child = rcp.exec("sleep 30", (err) => {});
+    await new Promise((res) => child.on("spawn", res));
+    assert.ok(child.pid > 0, "exec should have live pid");
+    child.kill("SIGTERM");
+    const code = await new Promise((res) => child.on("exit", (c) => res(c)));
+    assert.ok(code !== 0, "killed exec should not exit 0");
+  });
+
+  // ─── promises.exec over WS ───
+  await test("ws: promises.exec binary-safe", async () => {
+    const { stdout } = await rcp.promises.exec("head -c 64 /dev/urandom", { maxBuffer: 4096, encoding: "buffer" });
+    assert.strictEqual(stdout.length, 64, "promises.exec should preserve binary");
+  });
+
   console.log("\n=== " + passed + " passed, " + failed + " failed ===");
   process.exit(failed > 0 ? 1 : 0);
 }
