@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Node.js child_process-compatible module backed by HTTP. Drop-in replacement for require('child_process') that routes exec/spawn to a remote server — non-interactive SSH exec replacement.",
   "main": "index.js",
+  "files": ["index.js", "lib/"],
   "scripts": {
     "test": "node test/test.js"
   },
