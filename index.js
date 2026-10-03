@@ -3,6 +3,7 @@
 const client = require("./lib/client");
 const main = require("./lib/main");
 const { patch, restore, isPatched } = require("./lib/patch");
+const syncBridge = require("./lib/sync-bridge");
 
 module.exports = {
   ...main,
@@ -20,5 +21,6 @@ module.exports = {
   restore,
   isPatched,
   client,
+  syncBridge,
   default: main,
 };
