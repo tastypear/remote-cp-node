@@ -6,13 +6,7 @@ Companion to [remote-fs-node](https://github.com/tastypear/remote-fs-node) (SFTP
 
 ## What makes this different
 
-Like remote-fs-node, this patches Node at **three levels**:
-
-1. **JS export layer** — replaces all methods on `require("child_process")`
-2. **`process.binding` layer** — not applicable (child_process has no fs-style binding)
-3. **`node:child_process` protocol** — patches `Module._resolveFilename` so `require("node:child_process")` is also intercepted
-
-This means any code using `exec`/`spawn`/`execFile`/`fork` — including third-party libraries — works remotely without code changes.
+Patches both `require("child_process")` and `require("node:child_process")` (via `Module._resolveFilename`), so any code using `exec`/`spawn`/`execFile`/`fork` — including third-party libraries — works remotely without code changes.
 
 ## Quick start
 
@@ -26,7 +20,7 @@ npm install remote-cp-node
 const remoteCp = require("remote-cp-node");
 remoteCp.configure({
   baseURL: "http://your-server:8765",
-  token: "your-token",
+  token: "my-secret",
 });
 
 const cp = remoteCp;
@@ -39,7 +33,7 @@ r.stdout.on("data", (d) => console.log(d.toString()));
 
 ```js
 const remoteCp = require("remote-cp-node");
-remoteCp.configure({ baseURL: "http://your-server:8765", token: "xxx" });
+remoteCp.configure({ baseURL: "http://your-server:8765", token: "my-secret" });
 remoteCp.patch();
 
 // Now ALL code that uses child_process works remotely
@@ -62,21 +56,21 @@ remoteCp.restore(); // MUST restore cp before fs
 remoteFs.restore();
 ```
 
-Out-of-order restore leaves a dangling wrapper reference (`Cannot read properties of null`). This mirrors how Node's own `Module` hook chains (e.g. ts-node + esbuild) require LIFO teardown.
-
 ## API
 
 Mirrors Node's `child_process`:
 
 | Function | Transport | Shell | Notes |
 |----------|-----------|-------|-------|
-| `exec(cmd, opts, cb)` | SSE or WS (`/ws/exec`) | yes (`sh -c`) | Returns `ChildProcess` with **live PID** (killable mid-run); stdout/stderr buffer-collected, callback gets `(err, stdout, stderr)` on exit. WS transport adds binary-safe output |
-| `execFile(file, args, opts, cb)` | SSE or WS | **no** | args as argv array (no injection); live PID, killable mid-run. WS transport adds binary-safe output |
-| `execSync(cmd, opts)` | sync curl (`/api/exec`) | yes | Throws on non-zero exit |
-| `execFileSync(file, args, opts)` | sync curl | **no** | args as argv |
-| `spawn(cmd, args, opts)` | SSE or WS (`/ws/exec`) | no (unless `opts.shell`) | Returns `ChildProcess` with real PID; live stdout/stderr streams. WS transport (`wsTransport:true`) adds streaming stdin + binary-safe output |
-| `spawnSync(cmd, args, opts)` | sync curl | no (unless `opts.shell`) | Returns `{pid, stdout, stderr, status, signal}` |
+| `exec(cmd, opts, cb)` | SSE or WS (`/ws/exec`) | yes (`sh -c`) | Returns `ChildProcess` with **live PID** (killable mid-run); stdout/stderr buffer-collected, callback gets `(err, stdout, stderr)` on exit |
+| `execFile(file, args, opts, cb)` | SSE or WS | **no** | args as argv array (no injection); live PID, killable mid-run |
+| `execSync(cmd, opts)` | sync (`/api/exec`) | yes | Throws on non-zero exit |
+| `execFileSync(file, args, opts)` | sync | **no** | args as argv |
+| `spawn(cmd, args, opts)` | SSE or WS (`/ws/exec`) | no (unless `opts.shell`) | Returns `ChildProcess` with real PID; live stdout/stderr streams |
+| `spawnSync(cmd, args, opts)` | sync | no (unless `opts.shell`) | Returns `{pid, stdout, stderr, status, signal}` |
 | `fork(modulePath, args, opts)` | SSE | **no** | Uses `"node"` (remote `$PATH`) + modulePath as arg (no shell, no injection) |
+| `batchExec(cmds, opts)` | async (`/api/exec/batch`) | — | Run multiple commands in one request; returns `{results: [...]}` |
+| `batchExecSync(cmds, opts)` | sync | — | Sync variant |
 | `promises.exec` / `promises.execFile` / `promises.fork` | — | — | Promise wrappers |
 
 `exec`/`execFile` run over the streaming endpoint (like Node's native `exec` = spawn + buffer), so they return a `ChildProcess` with a live PID that supports `kill()` mid-run. Output is buffer-collected up to `maxBuffer` and delivered to the callback on exit — no server-side full-buffer OOM.
@@ -91,27 +85,24 @@ Mirrors Node's `child_process`:
 - `killSignal` — default `"SIGTERM"`
 - `input` — one-shot stdin (string/Buffer), sent with the request and EOF'd before the process runs
 - `stdio` — `"pipe"` (default) or `"ignore"`; array form supported for indices 1/2
+- `wsTransport` — set via `configure({ wsTransport: true })`; enables WebSocket transport for `spawn` (streaming stdin + binary-safe output)
+
+### Selective routing
+
+`configure({ shouldRemote: (method, cmd, args, opts) => boolean })` — return `false` to keep a specific call local. Default: everything goes remote. Useful for keeping hot local tools (e.g. `git`, `node`) in-process while shelling out to the remote for everything else.
 
 ### ChildProcess
 
 `EventEmitter` with `pid`, `exitCode`, `signalCode`, `killed`, `stdin`, `stdout`, `stderr`, `stdio`. Methods: `kill(signal)`, `send()`, `disconnect()`, `ref()`/`unref()`.
 
-`kill(signal)` contacts `/api/exec/kill` with **ownership verification** — the server only kills PIDs it spawned (whole process group via `os.killpg`). If the kill can't be confirmed (process already exited, network error), an `exit`/`close` is synthesized so callers never hang. Works on `exec`/`execFile`/`spawn`/`fork` (all stream-backed with live PIDs).
-
-## stdin semantics
-
-SSH exec channel supports one-shot stdin (`echo x | ssh host cmd`) and that's the dominant real-world pattern. remote-cp-node supports:
-
-- **One-shot via `opts.input`** — sent in the request body, written before the process runs. Covers ~85% of use cases.
-- **Buffered via `child.stdin.write()` + `end()`** — chunks are buffered and flushed as a single POST to `/api/exec/stdin` on `end()`. Covers pipe-style usage (`write(data); end()`). The flush waits for the `pid` SSE event before sending.
-- **True streaming stdin** (write → await output → write) — supported via **WebSocket transport** (`configure({ wsTransport: true })`). `spawn()` upgrades to a bidirectional `/ws/exec` session: `child.stdin.write()` streams each chunk as a WS frame, `end()` sends EOF, and stdout/stderr are binary-safe (base64 fallback). `exec`/`execFile`/`spawnSync` still use SSE (buffered semantics). For PTY/resize, see future work.
+`kill(signal)` contacts `/api/exec/kill` with **ownership verification** — the server only kills PIDs it spawned (whole process group). If the kill can't be confirmed (process already exited, network error), an `exit`/`close` is synthesized so callers never hang. Works on `exec`/`execFile`/`spawn`/`fork` (all stream-backed with live PIDs).
 
 ## WebSocket transport
 
-Enable with `configure({ wsTransport: true })`. `spawn()` then uses a bidirectional WebSocket (`/ws/exec`) instead of SSE, solving two SSE limitations:
+Enable with `configure({ wsTransport: true })`. `spawn()` then uses a bidirectional WebSocket (`/ws/exec`) instead of SSE, adding:
 
 - **Streaming stdin** — `child.stdin.write(chunk)` sends immediately; `child.stdin.end()` sends EOF. Interactive write→read→write works.
-- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy). Applies to `spawn`, `exec`, and `execFile`. The WS transport also uses binary frames (1-byte prefix + raw bytes) by default, eliminating the 33% base64 overhead for binary-heavy output.
+- **Binary-safe stdout/stderr** — invalid UTF-8 chunks are sent as base64 instead of `errors="replace"` (lossy). Binary frames (1-byte prefix + raw bytes) are used by default, eliminating the 33% base64 overhead for binary-heavy output.
 
 Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). The session is registered in the server's process table, so HTTP `/api/exec/kill` and `/api/exec/stdin` also work on WS-spawned PIDs. `exec`/`execFile` use WS with buffer-collect (same callback semantics, but binary-safe); `spawnSync`/`execSync`/`execFileSync` still use the sync HTTP path.
 
@@ -123,29 +114,13 @@ Auth uses `Authorization: Bearer <token>` header (or `?token=` query fallback). 
 
 `spawn(cmd, args, { detach: true })` keeps the process alive after the WebSocket disconnects. On disconnect the child emits `'detach'` (with the pid) instead of `'close'` — the process continues running on the server with its output drained. Check status with `await client.status(pid)` (returns `{running, exit_code, ...}`) or kill with `await client.kill(pid)`. Useful for long-running processes that must survive network blips.
 
+## Sync implementation
+
+Sync methods (`execSync`/`execFileSync`/`spawnSync`/`batchExecSync`) use a **worker-thread bridge** (`SharedArrayBuffer` + `Atomics.wait`) — the main thread writes the request to a shared buffer, posts to a worker, and blocks until the response arrives. No subprocess fork per call. Falls back to `curl` if `SharedArrayBuffer` is unavailable (older Node or disabled cross-origin isolation).
+
 ## Server backend
 
-remote-cp-node requires an HTTP server implementing these exec endpoints (shared with remote-fs-node; see [remote-ops-server](https://github.com/tastypear/remote-ops-server) for the reference implementation):
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/exec` | POST | Sync exec — returns `{stdout, stderr, exit_code, pid, duration_ms}` |
-| `/api/exec/stream` | POST | SSE streaming — emits `pid` → `stdout`/`stderr` → `exit` frames; keepalive comments on idle |
-| `/api/exec/kill` | POST | Kill by PID (ownership-checked against server process table) |
-| `/api/exec/stdin` | POST | Write to a spawned process's stdin (`{pid, data, close}`) |
-| `/ws/exec` | WS | Bidirectional — streaming stdin, binary-safe stdout/stderr (base64), kill, keepalive |
-
-Request body (`shell=true` for `exec`/`execSync`, `shell=false` otherwise):
-```json
-{ "cmd": "echo", "args": ["hello"], "shell": false, "cwd": "/", "env": {}, "timeout": 30, "stdin": null }
-```
-
-Server guarantees:
-- **Process registry** — every spawned PID is tracked; kill/stdin verify ownership (no raw `os.kill` on arbitrary PIDs)
-- **Env sanitization** — secrets (`*TOKEN*`, `*SECRET*`, `*KEY*`, etc.) stripped from the inherited environment
-- **Timeout enforcement** — on both sync and stream endpoints; kills the whole process group (`os.killpg`)
-- **SSE keepalive** — idle periods emit `: keepalive` comments to defeat proxy idle timeouts
-- **Orphan cleanup** — client disconnect → best-effort process-group kill; background sweeper reaps idle entries
+Requires [remote-ops-server](https://github.com/tastypear/remote-ops-server) (Go or Python) implementing the exec endpoints: `/api/exec`, `/api/exec/batch`, `/api/exec/stream`, `/api/exec/kill`, `/api/exec/stdin`, `/ws/exec`. See its README for the full API reference.
 
 ## Test
 
@@ -154,18 +129,18 @@ Server guarantees:
 node test/test.js              # HTTP/SSE transport
 node test/test_ws.js           # WebSocket transport
 node test/test_pty.js          # PTY mode (interactive processes)
+node test/test_detach.js       # Detach mode
+node test/test_batch.js        # Batch exec
+node test/test_parity.js       # Node.js child_process API parity
 node test/test_integration.js  # remote-fs + remote-cp (HTTP)
 node test/test_ws_integration.js  # remote-fs + remote-cp (WS)
 ```
 
 ## Limitations
 
-- True streaming stdin unsupported (see above) — one-shot `input` and buffered `write()+end()` cover the non-interactive exec use cases
-- Binary output: stdout/stderr are decoded UTF-8 with `errors="replace"` on the server; non-UTF-8 bytes may be corrupted. Use for text commands, not binary transfer (use remote-fs-node for binary file I/O)
-- Sync methods use `curl` subprocess (~50-100ms overhead per call)
-- `stdio: "inherit"` not implemented; `detached`/`uid`/`gid` not supported
+- Without WS transport, stdout/stderr are decoded UTF-8 with `errors="replace"` on the server; non-UTF-8 bytes may be corrupted. Use `wsTransport: true` for binary-safe output, or remote-fs-node for binary file I/O.
+- `stdio: "inherit"` not implemented; `uid`/`gid` not supported
 - IPC channel (`fork`'s `send`/`message` events) writes to stdin, not a real IPC channel
-- PTY/interactive terminal not supported (use `spawn` + SSE for live output)
 - This mirrors Node's `child_process` API, **not** the `ssh2` library's channel/stream API — downstream code using `ssh2` directly needs adapter work, but code using `child_process` to shell out to `ssh` works transparently after `patch()`
 
 ## License
