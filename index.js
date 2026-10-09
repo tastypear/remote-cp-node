@@ -22,5 +22,6 @@ module.exports = {
   isPatched,
   client,
   syncBridge,
+  setDebugLogger: client.setDebugLogger,
   default: main,
 };
